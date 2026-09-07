@@ -1,0 +1,33 @@
+name: Nova APK Uretici
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Kodlari Cek
+      uses: actions/checkout@v4
+      
+    - name: Java 17 Kurulumu
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+        
+    - name: APK Derleme Islemi
+      run: |
+        GRADLE_VERSION=8.2.1
+        wget -q https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip
+        unzip -q gradle-${GRADLE_VERSION}-bin.zip
+        export PATH=$PWD/gradle-${GRADLE_VERSION}/bin:$PATH
+        gradle wrapper --gradle-version ${GRADLE_VERSION}
+        chmod +x gradlew
+        ./gradlew assembleDebug --stacktrace
+        
+    - name: APK Yukle
+      uses: actions/upload-artifact@v4
+      with:
+        name: Nova-App
+        path: app/build/outputs/apk/debug/app-debug.apk
