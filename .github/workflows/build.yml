@@ -16,6 +16,32 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
         
+    - name: Hata Giderici (Otomatik Duzeltme)
+      run: |
+        # Hatalı olan Manifest dosyasını sunucuda sıfırdan ve eksiksiz oluşturuyoruz
+        mkdir -p app/src/main
+        cat << 'EOF' > app/src/main/AndroidManifest.xml
+        <?xml version="1.0" encoding="utf-8"?>
+        <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+            <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+            <uses-permission android:name="android.permission.BLUETOOTH" />
+            <application
+                android:allowBackup="true"
+                android:label="Nova"
+                android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                <activity
+                    android:name="com.sert.nova.MainActivity"
+                    android:exported="true">
+                    <intent-filter>
+                        <action android:name="android.intent.action.MAIN" />
+                        <category android:name="android.intent.category.LAUNCHER" />
+                    </intent-filter>
+                </activity>
+            </application>
+        </manifest>
+        EOF
+        
     - name: APK Derleme Islemi
       run: |
         GRADLE_VERSION=8.2.1
