@@ -4,6 +4,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -13,16 +15,30 @@ import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
-    private lateinit var player: ExoPlayer
+    private var player: ExoPlayer? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        player = ExoPlayer.Builder(this).build()
+        
+        var sistemHatasi: String? = null
+        
+        // Uygulama çökmek yerine hatayı yakalayıp ekrana yansıtacak
+        try {
+            player = ExoPlayer.Builder(this).build()
+        } catch (e: Exception) {
+            sistemHatasi = e.stackTraceToString()
+        }
 
         setContent {
             MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    MainScreen(player)
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    if (sistemHatasi != null) {
+                        // Eğer hata varsa çökmek yerine kırmızı uyarı ekranı açılacak
+                        HataEkrani(sistemHatasi!!)
+                    } else {
+                        // Hata yoksa uygulamamız normal çalışacak
+                        AnaEkran(player!!)
+                    }
                 }
             }
         }
@@ -30,12 +46,27 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        player.release()
+        player?.release()
     }
 }
 
 @Composable
-fun MainScreen(player: ExoPlayer) {
+fun HataEkrani(hataDetayi: String) {
+    Column(modifier = Modifier
+        .fillMaxSize()
+        .padding(16.dp)
+        .verticalScroll(rememberScrollState())
+    ) {
+        Text("Uygulama Başlatılamadı!", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.headlineSmall)
+        Spacer(modifier = Modifier.height(10.dp))
+        Text("Lütfen aşağıdaki hatayı kopyalayıp veya ekran görüntüsü alıp paylaşın:", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+        Spacer(modifier = Modifier.height(10.dp))
+        Text(hataDetayi, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+fun AnaEkran(player: ExoPlayer) {
     var playbackSpeed by remember { mutableStateOf(1.0f) }
     var isLooping by remember { mutableStateOf(false) }
     var loopStart by remember { mutableStateOf(0L) }
@@ -50,8 +81,8 @@ fun MainScreen(player: ExoPlayer) {
         }
     }
 
-    Column(modifier = Modifier.padding(16.dp)) {
-        Text("Nova Player", style = MaterialTheme.typography.headlineMedium)
+    Column(modifier = Modifier.padding(16.dp).fillMaxSize()) {
+        Text("Nova Player (Beta Test)", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(20.dp))
 
         Text("Hız: ${playbackSpeed}x")
@@ -75,7 +106,7 @@ fun MainScreen(player: ExoPlayer) {
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
-                Text("A-B Bölge Tekrarı")
+                Text("A-B Bölge Tekrarı", color = MaterialTheme.colorScheme.primary)
                 Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                     Checkbox(checked = isLooping, onCheckedChange = { isLooping = it })
                     Text("Döngüyü Aktif Et")
