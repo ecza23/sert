@@ -9,13 +9,16 @@
         android:allowBackup="true"
         android:label="Nova"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        
+        <!-- Çökmeyi engelleyen tam adres tanımı -->
         <activity
-            android:name=".MainActivity"
+            android:name="com.sert.nova.MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        
     </application>
 </manifest>
