@@ -16,136 +16,183 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
         
-    - name: Tam Senkronizasyon ve Sifirlama
+    - name: Oynatici ve Klasor Yonetimi Kodlarini Enjekte Et
       run: |
-        cat << 'EOF' > build.gradle
-        plugins {
-            id 'com.android.application' version '8.1.0' apply false
-            id 'org.jetbrains.kotlin.android' version '1.9.0' apply false
-        }
-        EOF
-        
-        cat << 'EOF' > settings.gradle
-        pluginManagement {
-            repositories {
-                google()
-                mavenCentral()
-                gradlePluginPortal()
-            }
-        }
-        dependencyResolutionManagement {
-            repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-            repositories {
-                google()
-                mavenCentral()
-            }
-        }
-        rootProject.name = "Nova"
-        include ':app'
-        EOF
-        
         mkdir -p app/src/main/java/com/sert/nova
         cat << 'EOF' > app/src/main/java/com/sert/nova/MainActivity.kt
         package com.sert.nova
+
+        import android.net.Uri
         import android.os.Bundle
         import androidx.activity.ComponentActivity
+        import androidx.activity.compose.rememberLauncherForActivityResult
         import androidx.activity.compose.setContent
+        import androidx.activity.result.contract.ActivityResultContracts
         import androidx.compose.foundation.layout.*
         import androidx.compose.material3.*
+        import androidx.compose.runtime.*
+        import androidx.compose.ui.Alignment
         import androidx.compose.ui.Modifier
         import androidx.compose.ui.unit.dp
+        import androidx.media3.common.MediaItem
+        import androidx.media3.common.PlaybackParameters
+        import androidx.media3.exoplayer.ExoPlayer
+        import kotlinx.coroutines.delay
+
         class MainActivity : ComponentActivity() {
+            private lateinit var player: ExoPlayer
+
             override fun onCreate(savedInstanceState: Bundle?) {
                 super.onCreate(savedInstanceState)
+                player = ExoPlayer.Builder(this).build()
+
                 setContent {
                     MaterialTheme {
-                        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Text("Nova Nihayet Açıldı!", style = MaterialTheme.typography.headlineMedium)
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Text("Çökme sebebi Kotlin sürüm çakışması ve eksik temaymış. Tüm sistem sıfırdan senkronize edildi. Artık güvendeyiz.", color = MaterialTheme.colorScheme.primary)
-                            }
+                        Surface(
+                            modifier = Modifier.fillMaxSize(),
+                            color = MaterialTheme.colorScheme.background
+                        ) {
+                            OynaticiEkrani(player = player)
                         }
+                    }
+                }
+            }
+
+            override fun onDestroy() {
+                super.onDestroy()
+                player.release()
+            }
+        }
+
+        @Composable
+        fun OynaticiEkrani(player: ExoPlayer) {
+            var secilenMuzikUri by remember { mutableStateOf<Uri?>(null) }
+            var muzinismi by remember { mutableStateOf("Henüz ses dosyası seçilmedi") }
+            var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
+            var isLooping by remember { mutableStateOf(false) }
+
+            // Dosya/Müzik seçici launcher
+            val launcher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.GetContent()
+            ) { uri: Uri? ->
+                uri?.let {
+                    secilenMuzikUri = it
+                    muzinismi = it.lastPathSegment ?: "Bilinmeyen Parça"
+                    val mediaItem = MediaItem.fromUri(it)
+                    player.setMediaItem(mediaItem)
+                    player.prepare()
+                    player.play()
+                }
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Top
+            ) {
+                Text(
+                    text = "Nova Player Beta",
+                    style = MaterialTheme.typography.headlineMedium
+                )
+                
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Dosya Seçme Butonu
+                Button(
+                    onClick = { launcher.launch("audio/*") },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Klasörden Ses / Müzik Seç")
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+                
+                Text(
+                    text = muzinismi,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+
+                Spacer(modifier = Modifier.height(30.dp))
+
+                // Oynat / Duraklat
+                Row(
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Button(onClick = { player.play() }) { Text("Oynat") }
+                    Button(onClick = { player.pause() }) { Text("Duraklat") }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // 10 Saniye İleri / Geri Atlama
+                Row(
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Button(onClick = { 
+                        val yeniKonum = (player.currentPosition - 10000L).coerceAtLeast(0L)
+                        player.seekTo(yeniKonum) 
+                    }) { 
+                        Text("-10 Sn") 
+                    }
+                    
+                    Button(onClick = { 
+                        val yeniKonum = (player.currentPosition + 10000L).coerceAtMost(player.duration)
+                        player.seekTo(yeniKonum) 
+                    }) { 
+                        Text("+10 Sn") 
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(30.dp))
+
+                // Hız Ayarı
+                Text("Oynatma Hızı: String.format("%.2f", playbackSpeed)x")
+                Slider(
+                    value = playbackSpeed,
+                    onValueChange = { 
+                        playbackSpeed = it
+                        player.playbackParameters = PlaybackParameters(it)
+                    },
+                    valueRange = 0.5f..2.5f,
+                    steps = 20
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // A-B Tekrar Döngüsü
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = isLooping,
+                            onCheckedChange = { isLooping = it }
+                        )
+                        Text("A-B Döngüsü (Aynı Parçayı Tekrar Et)")
                     }
                 }
             }
         }
         EOF
-        
-        cat << 'EOF' > app/build.gradle
-        plugins {
-            id 'com.android.application'
-            id 'org.jetbrains.kotlin.android'
-        }
-        android {
-            namespace 'com.sert.nova'
-            compileSdk 34
-            defaultConfig {
-                applicationId "com.sert.nova"
-                minSdk 24
-                targetSdk 34
-                versionCode 1
-                versionName "1.0"
-            }
-            compileOptions {
-                sourceCompatibility JavaVersion.VERSION_17
-                targetCompatibility JavaVersion.VERSION_17
-            }
-            kotlinOptions {
-                jvmTarget = '17'
-            }
-            buildFeatures {
-                compose true
-            }
-            composeOptions {
-                kotlinCompilerExtensionVersion '1.5.1'
-            }
-        }
-        dependencies {
-            implementation 'androidx.core:core-ktx:1.12.0'
-            implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
-            implementation 'androidx.activity:activity-compose:1.8.2'
-            implementation platform('androidx.compose:compose-bom:2023.08.00')
-            implementation 'androidx.compose.ui:ui'
-            implementation 'androidx.compose.material3:material3'
-            implementation 'androidx.media3:media3-exoplayer:1.2.1'
-            implementation 'androidx.media3:media3-ui:1.2.1'
-        }
-        EOF
-        
-        cat << 'EOF' > app/src/main/AndroidManifest.xml
-        <?xml version="1.0" encoding="utf-8"?>
-        <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-            <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-            <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
-            <uses-permission android:name="android.permission.BLUETOOTH" />
-            <application
-                android:allowBackup="true"
-                android:label="Nova">
-                <activity
-                    android:name="com.sert.nova.MainActivity"
-                    android:exported="true">
-                    <intent-filter>
-                        <action android:name="android.intent.action.MAIN" />
-                        <category android:name="android.intent.category.LAUNCHER" />
-                    </intent-filter>
-                </activity>
-            </application>
-        </manifest>
-        EOF
 
-    - name: APK Derleme Islemi
-      run: |
-        GRADLE_VERSION=8.2.1
-        wget -q https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip
-        unzip -q gradle-${GRADLE_VERSION}-bin.zip
-        export PATH=$PWD/gradle-${GRADLE_VERSION}/bin:$PATH
-        gradle wrapper --gradle-version ${GRADLE_VERSION}
-        chmod +x gradlew
-        ./gradlew assembleDebug --stacktrace
-        
-    - name: APK Yukle
-      uses: actions/upload-artifact@v5
-      with:
-        name: Nova-App
-        path: app/build/outputs/apk/debug/app-debug.apk
+- name: APK Derleme Islemi
+  run: |
+    GRADLE_VERSION=8.2.1
+    wget -q https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip
+    unzip -q gradle-${GRADLE_VERSION}-bin.zip
+    export PATH=$PWD/gradle-${GRADLE_VERSION}/bin:$PATH
+    gradle wrapper --gradle-version ${GRADLE_VERSION}
+    chmod +x gradlew
+    ./gradlew assembleDebug --stacktrace
+    
+- name: APK Yukle
+  uses: actions/upload-artifact@v5
+  with:
+    name: Nova-App
+    path: app/build/outputs/apk/debug/app-debug.apk
