@@ -1,4 +1,4 @@
-name: Nova APK Uretici (PRO Surum)
+name: Nova APK Uretici (PRO)
 on:
   push:
     branches: [ "main" ]
@@ -16,13 +16,15 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
         
-    - name: Projeyi Sifirdan Kur
+    - name: Eski Altyapiyi Temizle
       run: |
         rm -rf app
         mkdir -p app/src/main/java/com/sert/nova
         mkdir -p app/src/main/res/drawable
         mkdir -p app/src/main/res/mipmap-anydpi-v26
         
+    - name: Ikonlari ve Manifesti Insa Et
+      run: |
         cat << 'EOF' > app/src/main/res/drawable/ic_launcher_background.xml
         <?xml version="1.0" encoding="utf-8"?>
         <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
@@ -43,10 +45,13 @@ jobs:
         <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.sert.nova">
             <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
             <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+            <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
             <application
                 android:allowBackup="true"
                 android:icon="@mipmap/ic_launcher"
-                android:label="Nova"
+                android:label="Nova Pro"
                 android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
                 <activity
                     android:name=".MainActivity"
@@ -56,18 +61,57 @@ jobs:
                         <category android:name="android.intent.category.LAUNCHER" />
                     </intent-filter>
                 </activity>
+                <service
+                    android:name=".PlaybackService"
+                    android:foregroundServiceType="mediaPlayback"
+                    android:exported="true">
+                    <intent-filter>
+                        <action android:name="androidx.media3.session.MediaSessionService"/>
+                    </intent-filter>
+                </service>
             </application>
         </manifest>
         EOF
-        
+
+    - name: Arka Plan Hizmetini (PlaybackService) Enjekte Et
+      run: |
+        cat << 'EOF' > app/src/main/java/com/sert/nova/PlaybackService.kt
+        package com.sert.nova
+        import androidx.media3.exoplayer.ExoPlayer
+        import androidx.media3.session.MediaSession
+        import androidx.media3.session.MediaSessionService
+
+        class PlaybackService : MediaSessionService() {
+            private var mediaSession: MediaSession? = null
+            override fun onCreate() {
+                super.onCreate()
+                val player = ExoPlayer.Builder(this).build()
+                mediaSession = MediaSession.Builder(this, player).build()
+            }
+            override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
+            override fun onDestroy() {
+                mediaSession?.player?.release()
+                mediaSession?.release()
+                mediaSession = null
+                super.onDestroy()
+            }
+        }
+        EOF
+
+    - name: Ana Uygulama Kodlarini Enjekte Et
+      run: |
         cat << 'EOF' > app/src/main/java/com/sert/nova/MainActivity.kt
         package com.sert.nova
         
+        import android.content.ComponentName
+        import android.content.Context
         import android.content.Intent
         import android.graphics.BitmapFactory
         import android.net.Uri
+        import android.os.Build
         import android.os.Bundle
         import androidx.activity.ComponentActivity
+        import androidx.activity.compose.BackHandler
         import androidx.activity.compose.rememberLauncherForActivityResult
         import androidx.activity.compose.setContent
         import androidx.activity.result.contract.ActivityResultContracts
@@ -77,6 +121,7 @@ jobs:
         import androidx.compose.foundation.layout.*
         import androidx.compose.foundation.lazy.LazyColumn
         import androidx.compose.foundation.lazy.items
+        import androidx.compose.foundation.lazy.itemsIndexed
         import androidx.compose.foundation.shape.RoundedCornerShape
         import androidx.compose.material.icons.Icons
         import androidx.compose.material.icons.filled.*
@@ -89,191 +134,258 @@ jobs:
         import androidx.compose.ui.graphics.Color
         import androidx.compose.ui.graphics.asImageBitmap
         import androidx.compose.ui.layout.ContentScale
+        import androidx.compose.ui.platform.LocalContext
         import androidx.compose.ui.text.font.FontWeight
         import androidx.compose.ui.text.style.TextOverflow
         import androidx.compose.ui.unit.dp
         import androidx.compose.ui.unit.sp
+        import androidx.core.content.ContextCompat
         import androidx.documentfile.provider.DocumentFile
+        import androidx.media3.common.C
         import androidx.media3.common.MediaItem
         import androidx.media3.common.MediaMetadata
         import androidx.media3.common.Player
         import androidx.media3.common.PlaybackParameters
-        import androidx.media3.exoplayer.ExoPlayer
+        import androidx.media3.session.MediaController
+        import androidx.media3.session.SessionToken
         import kotlinx.coroutines.delay
         import java.util.Locale
         
+        enum class Screen { FOLDERS, TRACKS, PLAYER }
+        
         class MainActivity : ComponentActivity() {
-            private lateinit var player: ExoPlayer
-            
             override fun onCreate(savedInstanceState: Bundle?) {
                 super.onCreate(savedInstanceState)
-                player = ExoPlayer.Builder(this).build()
+                if (Build.VERSION.SDK_INT >= 33) {
+                    requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 0)
+                }
                 setContent {
                     MaterialTheme(colorScheme = darkColorScheme()) {
                         Surface(modifier = Modifier.fillMaxSize()) {
-                            NovaProEkrani(player = player, activity = this)
+                            NovaProApp()
                         }
                     }
                 }
-            }
-            
-            override fun onDestroy() {
-                super.onDestroy()
-                player.release()
             }
         }
         
         @Composable
-        fun NovaProEkrani(player: ExoPlayer, activity: ComponentActivity) {
+        fun NovaProApp() {
+            val context = LocalContext.current
+            val prefs = context.getSharedPreferences("nova_prefs", Context.MODE_PRIVATE)
+            
+            var player by remember { mutableStateOf<Player?>(null) }
+            var currentScreen by remember { mutableStateOf(Screen.FOLDERS) }
+            
+            var savedFolders by remember { mutableStateOf(prefs.getStringSet("folders", emptySet())?.toList() ?: emptyList()) }
             var audioFiles by remember { mutableStateOf<List<DocumentFile>>(emptyList()) }
-            var currentTrackName by remember { mutableStateOf("Seçim Yapılmadı") }
-            var isPlaying by remember { mutableStateOf(false) }
-            var artworkBitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
-            var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
-            var isLooping by remember { mutableStateOf(false) }
+            var currentFolderName by remember { mutableStateOf("") }
+            
+            DisposableEffect(Unit) {
+                val sessionToken = SessionToken(context, ComponentName(context, PlaybackService::class.java))
+                val controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
+                controllerFuture.addListener({ player = controllerFuture.get() }, ContextCompat.getMainExecutor(context))
+                onDispose { MediaController.releaseFuture(controllerFuture); player = null }
+            }
+            
+            val folderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+                uri?.let {
+                    context.contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    val newSet = savedFolders.toMutableSet().apply { add(it.toString()) }
+                    prefs.edit().putStringSet("folders", newSet).apply()
+                    savedFolders = newSet.toList()
+                }
+            }
+            
+            BackHandler(enabled = currentScreen != Screen.FOLDERS) {
+                if(currentScreen == Screen.PLAYER) currentScreen = Screen.TRACKS
+                else if(currentScreen == Screen.TRACKS) currentScreen = Screen.FOLDERS
+            }
             
             val bgGradient = Brush.verticalGradient(colors = listOf(Color(0xFF1E1E2C), Color(0xFF0D0D14)))
             
-            DisposableEffect(player) {
-                val listener = object : Player.Listener {
-                    override fun onIsPlayingChanged(isPlayingState: Boolean) {
-                        isPlaying = isPlayingState
-                    }
-                    override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
-                        currentTrackName = mediaMetadata.title?.toString() ?: "Bilinmeyen Parça"
-                        val data = mediaMetadata.artworkData
-                        if (data != null) {
-                            val bmp = BitmapFactory.decodeByteArray(data, 0, data.size)
-                            artworkBitmap = bmp.asImageBitmap()
-                        } else {
-                            artworkBitmap = null
-                        }
-                    }
-                }
-                player.addListener(listener)
-                onDispose { player.removeListener(listener) }
-            }
-            
-            LaunchedEffect(isLooping) {
-                while (isLooping) {
-                    if (player.currentPosition >= (player.duration - 100L).coerceAtLeast(0L)) {
-                        player.seekTo(0)
-                    }
-                    delay(100)
-                }
-            }
-            
-            val folderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
-                uri?.let {
-                    activity.contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    val folder = DocumentFile.fromTreeUri(activity, it)
-                    audioFiles = folder?.listFiles()?.filter { file -> 
-                        file.type?.startsWith("audio/") == true 
-                    } ?: emptyList()
-                }
-            }
-            
             Box(modifier = Modifier.fillMaxSize().background(bgGradient)) {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    // Üst Bar
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Nova Pro", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                        IconButton(onClick = { folderLauncher.launch(null) }) {
-                            Icon(Icons.Filled.AddCircle, contentDescription = "Klasör Ekle", tint = Color(0xFFBB86FC), modifier = Modifier.size(32.dp))
-                        }
-                    }
-                    
-                    // Liste Alanı
-                    if (audioFiles.isEmpty()) {
-                        Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                            Text("Müzik klasörü seçmek için sağ üstteki + simgesine dokunun.", color = Color.Gray, modifier = Modifier.padding(32.dp))
-                        }
-                    } else {
-                        LazyColumn(modifier = Modifier.weight(1f).padding(horizontal = 16.dp)) {
-                            items(audioFiles) { file ->
-                                Card(
-                                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).clickable {
-                                        val mediaItem = MediaItem.fromUri(file.uri)
-                                        player.setMediaItem(mediaItem)
-                                        player.prepare()
-                                        player.play()
-                                        currentTrackName = file.name ?: "Bilinmeyen Parça"
-                                    },
-                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF2C2C3E)),
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Text(
-                                        text = file.name ?: "İsimsiz Dosya",
-                                        color = Color.White,
-                                        modifier = Modifier.padding(16.dp),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                when(currentScreen) {
+                    Screen.FOLDERS -> {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            Row(modifier = Modifier.fillMaxWidth().padding(20.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text("Klasörlerim", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                IconButton(onClick = { folderLauncher.launch(null) }) {
+                                    Icon(Icons.Filled.CreateNewFolder, contentDescription = "Klasör Ekle", tint = Color(0xFFBB86FC), modifier = Modifier.size(36.dp))
+                                }
+                            }
+                            if(savedFolders.isEmpty()) {
+                                Text("Sağ üstten müzik klasörlerinizi ekleyin.", color = Color.Gray, modifier = Modifier.padding(20.dp))
+                            } else {
+                                LazyColumn(modifier = Modifier.padding(horizontal = 16.dp)) {
+                                    items(savedFolders) { uriStr ->
+                                        val doc = DocumentFile.fromTreeUri(context, Uri.parse(uriStr))
+                                        Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).clickable {
+                                            currentFolderName = doc?.name ?: "Bilinmeyen"
+                                            audioFiles = doc?.listFiles()?.filter { it.type?.startsWith("audio/") == true }?.sortedBy { it.name } ?: emptyList()
+                                            currentScreen = Screen.TRACKS
+                                        }, colors = CardDefaults.cardColors(containerColor = Color(0xFF2C2C3E))) {
+                                            Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Filled.Folder, contentDescription = null, tint = Color(0xFFBB86FC), modifier = Modifier.size(40.dp))
+                                                Spacer(modifier = Modifier.width(16.dp))
+                                                Text(doc?.name ?: "Erişim Yok", color = Color.White, fontSize = 18.sp)
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
-                    
-                    // Oynatıcı Kontrol Paneli (Alt Kısım)
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF181824)),
-                        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
-                    ) {
-                        Column(modifier = Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            // Albüm Kapağı & İsim
-                            if (artworkBitmap != null) {
-                                Image(
-                                    bitmap = artworkBitmap!!,
-                                    contentDescription = "Albüm",
-                                    modifier = Modifier.size(64.dp).clip(RoundedCornerShape(8.dp)),
-                                    contentScale = ContentScale.Crop
-                                )
-                                Spacer(modifier = Modifier.height(12.dp))
+                    Screen.TRACKS -> {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = { currentScreen = Screen.FOLDERS }) { Icon(Icons.Filled.ArrowBack, contentDescription = "Geri", tint = Color.White) }
+                                Text(currentFolderName, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
-                            Text(text = currentTrackName, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            
-                            Spacer(modifier = Modifier.height(20.dp))
-                            
-                            // Medya Kontrolleri (Simgesel)
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(onClick = { player.seekTo((player.currentPosition - 10000L).coerceAtLeast(0L)) }) {
-                                    Icon(Icons.Filled.FastRewind, contentDescription = "-10 Sn", tint = Color.White, modifier = Modifier.size(36.dp))
-                                }
-                                
-                                IconButton(
-                                    onClick = { if (isPlaying) player.pause() else player.play() },
-                                    modifier = Modifier.size(64.dp).background(Color(0xFFBB86FC), shape = RoundedCornerShape(32.dp))
-                                ) {
-                                    Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, contentDescription = "Oynat/Duraklat", tint = Color.White, modifier = Modifier.size(40.dp))
-                                }
-                                
-                                IconButton(onClick = { player.seekTo((player.currentPosition + 10000L).coerceAtMost(player.duration)) }) {
-                                    Icon(Icons.Filled.FastForward, contentDescription = "+10 Sn", tint = Color.White, modifier = Modifier.size(36.dp))
+                            LazyColumn(modifier = Modifier.padding(horizontal = 16.dp)) {
+                                itemsIndexed(audioFiles) { index, file ->
+                                    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable {
+                                        val items = audioFiles.map { MediaItem.Builder().setUri(it.uri).setMediaId(it.uri.toString()).setMediaMetadata(MediaMetadata.Builder().setTitle(it.name).build()).build() }
+                                        player?.setMediaItems(items, index, C.TIME_UNSET)
+                                        player?.prepare()
+                                        player?.play()
+                                        currentScreen = Screen.PLAYER
+                                    }, colors = CardDefaults.cardColors(containerColor = Color(0xFF181824))) {
+                                        Text("${index + 1}. ${file.name}", color = Color.LightGray, modifier = Modifier.padding(16.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
                                 }
                             }
-                            
-                            Spacer(modifier = Modifier.height(20.dp))
-                            
-                            // Hız Ayarı
-                            Text(text = "Hız: " + String.format(Locale.US, "%.2f", playbackSpeed) + "x", color = Color.Gray, fontSize = 14.sp)
-                            Slider(
-                                value = playbackSpeed,
-                                onValueChange = { playbackSpeed = it; player.playbackParameters = PlaybackParameters(it) },
-                                valueRange = 0.5f..2.5f,
-                                colors = SliderDefaults.colors(thumbColor = Color(0xFFBB86FC), activeTrackColor = Color(0xFFBB86FC))
-                            )
                         }
+                    }
+                    Screen.PLAYER -> {
+                        PlayerScreen(player = player, onBack = { currentScreen = Screen.TRACKS })
                     }
                 }
             }
         }
-        EOF
         
+        @Composable
+        fun PlayerScreen(player: Player?, onBack: () -> Unit) {
+            var currentTrackName by remember { mutableStateOf("Yükleniyor...") }
+            var isPlaying by remember { mutableStateOf(false) }
+            var artworkBitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+            var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
+            var repeatMode by remember { mutableIntStateOf(Player.REPEAT_MODE_OFF) }
+            var shuffleMode by remember { mutableStateOf(false) }
+            
+            var showSpeedDialog by remember { mutableStateOf(false) }
+            var showTimerDialog by remember { mutableStateOf(false) }
+            var sleepTimerMinutes by remember { mutableIntStateOf(0) }
+            var timerRunning by remember { mutableStateOf(false) }
+            
+            var abState by remember { mutableIntStateOf(0) }
+            var aPoint by remember { mutableLongStateOf(0L) }
+            var bPoint by remember { mutableLongStateOf(0L) }
+            
+            DisposableEffect(player) {
+                val listener = object : Player.Listener {
+                    override fun onIsPlayingChanged(isPlayingState: Boolean) { isPlaying = isPlayingState }
+                    override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+                        currentTrackName = mediaMetadata.title?.toString() ?: "Bilinmeyen Parça"
+                        val data = mediaMetadata.artworkData
+                        artworkBitmap = if (data != null) BitmapFactory.decodeByteArray(data, 0, data.size).asImageBitmap() else null
+                    }
+                    override fun onRepeatModeChanged(mode: Int) { repeatMode = mode }
+                    override fun onShuffleModeEnabledChanged(enabled: Boolean) { shuffleMode = enabled }
+                }
+                player?.addListener(listener)
+                onDispose { player?.removeListener(listener) }
+            }
+            
+            LaunchedEffect(abState, bPoint) {
+                while(abState == 2) {
+                    if ((player?.currentPosition ?: 0L) >= bPoint) { player?.seekTo(aPoint) }
+                    delay(100)
+                }
+            }
+            
+            LaunchedEffect(timerRunning) {
+                if(timerRunning && sleepTimerMinutes > 0) {
+                    delay(sleepTimerMinutes * 60 * 1000L)
+                    player?.pause()
+                    timerRunning = false; sleepTimerMinutes = 0
+                }
+            }
+            
+            Column(modifier = Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    IconButton(onClick = onBack) { Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Geri", tint = Color.White, modifier = Modifier.size(36.dp)) }
+                    Text("Şu An Çalıyor", color = Color.Gray, fontSize = 16.sp)
+                    IconButton(onClick = { showTimerDialog = true }) { Icon(Icons.Filled.Timer, contentDescription = "Zamanlayıcı", tint = if(timerRunning) Color(0xFFBB86FC) else Color.White) }
+                }
+                
+                Spacer(modifier = Modifier.height(30.dp))
+                if (artworkBitmap != null) {
+                    Image(bitmap = artworkBitmap!!, contentDescription = null, modifier = Modifier.size(250.dp).clip(RoundedCornerShape(16.dp)), contentScale = ContentScale.Crop)
+                } else {
+                    Box(modifier = Modifier.size(250.dp).background(Color(0xFF2C2C3E), RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Filled.MusicNote, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(80.dp))
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(40.dp))
+                Text(text = currentTrackName, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                
+                Spacer(modifier = Modifier.height(40.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { player?.seekToPrevious() }) { Icon(Icons.Filled.SkipPrevious, contentDescription = "Önceki", tint = Color.White, modifier = Modifier.size(40.dp)) }
+                    IconButton(onClick = { player?.seekTo((player?.currentPosition ?: 0L) - 10000L) }) { Icon(Icons.Filled.FastRewind, contentDescription = "-10 Sn", tint = Color.White, modifier = Modifier.size(36.dp)) }
+                    IconButton(onClick = { if (isPlaying) player?.pause() else player?.play() }, modifier = Modifier.size(70.dp).background(Color(0xFFBB86FC), shape = RoundedCornerShape(35.dp))) {
+                        Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, contentDescription = "Oynat/Duraklat", tint = Color.White, modifier = Modifier.size(44.dp))
+                    }
+                    IconButton(onClick = { player?.seekTo((player?.currentPosition ?: 0L) + 10000L) }) { Icon(Icons.Filled.FastForward, contentDescription = "+10 Sn", tint = Color.White, modifier = Modifier.size(36.dp)) }
+                    IconButton(onClick = { player?.seekToNext() }) { Icon(Icons.Filled.SkipNext, contentDescription = "Sonraki", tint = Color.White, modifier = Modifier.size(40.dp)) }
+                }
+                
+                Spacer(modifier = Modifier.height(40.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    IconButton(onClick = { showSpeedDialog = true }) { Icon(Icons.Filled.Speed, contentDescription = "Hız", tint = if(playbackSpeed != 1f) Color(0xFFBB86FC) else Color.White) }
+                    IconButton(onClick = {
+                        repeatMode = when(repeatMode) { Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL; Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE; else -> Player.REPEAT_MODE_OFF }
+                        player?.repeatMode = repeatMode
+                    }) { Icon(if(repeatMode == Player.REPEAT_MODE_ONE) Icons.Filled.RepeatOne else Icons.Filled.Repeat, contentDescription = "Tekrarla", tint = if(repeatMode != Player.REPEAT_MODE_OFF) Color(0xFFBB86FC) else Color.White) }
+                    IconButton(onClick = { shuffleMode = !shuffleMode; player?.shuffleModeEnabled = shuffleMode }) { Icon(Icons.Filled.Shuffle, contentDescription = "Karıştır", tint = if(shuffleMode) Color(0xFFBB86FC) else Color.White) }
+                    Button(onClick = {
+                        when(abState) {
+                            0 -> { aPoint = player?.currentPosition ?: 0L; abState = 1 }
+                            1 -> { bPoint = player?.currentPosition ?: 0L; abState = 2 }
+                            2 -> { abState = 0 }
+                        }
+                    }, colors = ButtonDefaults.buttonColors(containerColor = if(abState > 0) Color(0xFFBB86FC) else Color(0xFF2C2C3E))) {
+                        Text(when(abState) { 0 -> "A-B"; 1 -> "A Seçildi"; 2 -> "A-B Açık"; else -> "" }, color = Color.White)
+                    }
+                }
+            }
+            
+            if (showSpeedDialog) {
+                AlertDialog(onDismissRequest = { showSpeedDialog = false }, title = { Text("Oynatma Hızı") }, text = {
+                    Column {
+                        Text("${String.format(Locale.US, "%.2f", playbackSpeed)}x", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color(0xFFBB86FC))
+                        Slider(value = playbackSpeed, onValueChange = { playbackSpeed = it; player?.playbackParameters = PlaybackParameters(it) }, valueRange = 0.5f..2.5f, colors = SliderDefaults.colors(thumbColor = Color(0xFFBB86FC), activeTrackColor = Color(0xFFBB86FC)))
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Button(onClick = { playbackSpeed = 1f; player?.playbackParameters = PlaybackParameters(1f) }, modifier = Modifier.fillMaxWidth()) { Text("1.0x Normal Hıza Dön") }
+                    }
+                }, confirmButton = { TextButton(onClick = { showSpeedDialog = false }) { Text("Kapat") } })
+            }
+            
+            if (showTimerDialog) {
+                AlertDialog(onDismissRequest = { showTimerDialog = false }, title = { Text("Uyku Zamanlayıcı") }, text = {
+                    Column {
+                        Text("${sleepTimerMinutes} Dakika sonra kapanacak")
+                        Slider(value = sleepTimerMinutes.toFloat(), onValueChange = { sleepTimerMinutes = it.toInt() }, valueRange = 0f..120f)
+                    }
+                }, confirmButton = { TextButton(onClick = { timerRunning = sleepTimerMinutes > 0; showTimerDialog = false }) { Text(if(sleepTimerMinutes > 0) "Başlat" else "İptal Et") } })
+            }
+        }
+        EOF
+
+    - name: Kutuphane Baglantilarini (Gradle) Olustur
+      run: |
         cat << 'EOF' > app/build.gradle
         plugins {
             id 'com.android.application'
@@ -287,7 +399,7 @@ jobs:
                 minSdk 24
                 targetSdk 34
                 versionCode 1
-                versionName "1.0"
+                versionName "2.0"
             }
             compileOptions {
                 sourceCompatibility JavaVersion.VERSION_17
@@ -314,10 +426,11 @@ jobs:
             implementation 'androidx.documentfile:documentfile:1.0.1'
             implementation 'androidx.media3:media3-exoplayer:1.2.1'
             implementation 'androidx.media3:media3-ui:1.2.1'
+            implementation 'androidx.media3:media3-session:1.2.1'
         }
         EOF
 
-    - name: APK Derleme Islemi
+    - name: Nova Pro APK Derlemesi
       run: |
         GRADLE_VERSION=8.2.1
         wget -q https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip
@@ -330,5 +443,5 @@ jobs:
     - name: APK Yukle
       uses: actions/upload-artifact@v5
       with:
-        name: Nova-App
+        name: Nova-Pro-App
         path: app/build/outputs/apk/debug/app-debug.apk
