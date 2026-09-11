@@ -1,4 +1,4 @@
-name: Nova APK Uretici (PRO)
+name: Naim Player APK Uretici
 on:
   push:
     branches: [ "main" ]
@@ -16,19 +16,24 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
         
-    - name: Eski Altyapiyi Temizle
+    - name: Temiz Kurulum ve İkon Yaratimi
       run: |
         rm -rf app
         mkdir -p app/src/main/java/com/sert/nova
         mkdir -p app/src/main/res/drawable
         mkdir -p app/src/main/res/mipmap-anydpi-v26
         
-    - name: Ikonlari ve Manifesti Insa Et
-      run: |
         cat << 'EOF' > app/src/main/res/drawable/ic_launcher_background.xml
         <?xml version="1.0" encoding="utf-8"?>
         <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-            <path android:fillColor="#121212" android:pathData="M0,0h108v108h-108z"/>
+            <path android:fillColor="#181824" android:pathData="M0,0h108v108h-108z"/>
+        </vector>
+        EOF
+        
+        cat << 'EOF' > app/src/main/res/drawable/ic_launcher_foreground.xml
+        <?xml version="1.0" encoding="utf-8"?>
+        <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+            <path android:fillColor="#BB86FC" android:pathData="M 32 76 L 32 32 L 44 32 L 64 60 L 64 32 L 76 32 L 76 76 L 64 76 L 44 48 L 44 76 Z"/>
         </vector>
         EOF
         
@@ -36,7 +41,7 @@ jobs:
         <?xml version="1.0" encoding="utf-8"?>
         <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
             <background android:drawable="@drawable/ic_launcher_background"/>
-            <foreground android:drawable="@drawable/ic_launcher_background"/>
+            <foreground android:drawable="@drawable/ic_launcher_foreground"/>
         </adaptive-icon>
         EOF
         
@@ -51,7 +56,7 @@ jobs:
             <application
                 android:allowBackup="true"
                 android:icon="@mipmap/ic_launcher"
-                android:label="Nova Pro"
+                android:label="Naim Player"
                 android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
                 <activity
                     android:name=".MainActivity"
@@ -73,7 +78,7 @@ jobs:
         </manifest>
         EOF
 
-    - name: Arka Plan Hizmetini (PlaybackService) Enjekte Et
+    - name: Servis ve Ana Kodlari Enjekte Et
       run: |
         cat << 'EOF' > app/src/main/java/com/sert/nova/PlaybackService.kt
         package com.sert.nova
@@ -97,9 +102,7 @@ jobs:
             }
         }
         EOF
-
-    - name: Ana Uygulama Kodlarini Enjekte Et
-      run: |
+        
         cat << 'EOF' > app/src/main/java/com/sert/nova/MainActivity.kt
         package com.sert.nova
         
@@ -148,7 +151,10 @@ jobs:
         import androidx.media3.common.PlaybackParameters
         import androidx.media3.session.MediaController
         import androidx.media3.session.SessionToken
+        import kotlinx.coroutines.Dispatchers
         import kotlinx.coroutines.delay
+        import kotlinx.coroutines.launch
+        import kotlinx.coroutines.withContext
         import java.util.Locale
         
         enum class Screen { FOLDERS, TRACKS, PLAYER }
@@ -162,7 +168,7 @@ jobs:
                 setContent {
                     MaterialTheme(colorScheme = darkColorScheme()) {
                         Surface(modifier = Modifier.fillMaxSize()) {
-                            NovaProApp()
+                            NaimPlayerApp()
                         }
                     }
                 }
@@ -170,12 +176,14 @@ jobs:
         }
         
         @Composable
-        fun NovaProApp() {
+        fun NaimPlayerApp() {
             val context = LocalContext.current
             val prefs = context.getSharedPreferences("nova_prefs", Context.MODE_PRIVATE)
+            val coroutineScope = rememberCoroutineScope()
             
             var player by remember { mutableStateOf<Player?>(null) }
             var currentScreen by remember { mutableStateOf(Screen.FOLDERS) }
+            var isFolderLoading by remember { mutableStateOf(false) }
             
             var savedFolders by remember { mutableStateOf(prefs.getStringSet("folders", emptySet())?.toList() ?: emptyList()) }
             var audioFiles by remember { mutableStateOf<List<DocumentFile>>(emptyList()) }
@@ -209,21 +217,39 @@ jobs:
                     Screen.FOLDERS -> {
                         Column(modifier = Modifier.fillMaxSize()) {
                             Row(modifier = Modifier.fillMaxWidth().padding(20.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                Text("Klasörlerim", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                Text("Naim Player", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                 IconButton(onClick = { folderLauncher.launch(null) }) {
                                     Icon(Icons.Filled.CreateNewFolder, contentDescription = "Klasör Ekle", tint = Color(0xFFBB86FC), modifier = Modifier.size(36.dp))
                                 }
                             }
                             if(savedFolders.isEmpty()) {
                                 Text("Sağ üstten müzik klasörlerinizi ekleyin.", color = Color.Gray, modifier = Modifier.padding(20.dp))
+                            } else if (isFolderLoading) {
+                                Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        CircularProgressIndicator(color = Color(0xFFBB86FC))
+                                        Spacer(modifier = Modifier.height(16.dp))
+                                        Text("Parçalar Taranıyor...", color = Color.White)
+                                    }
+                                }
                             } else {
                                 LazyColumn(modifier = Modifier.padding(horizontal = 16.dp)) {
                                     items(savedFolders) { uriStr ->
                                         val doc = DocumentFile.fromTreeUri(context, Uri.parse(uriStr))
                                         Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).clickable {
-                                            currentFolderName = doc?.name ?: "Bilinmeyen"
-                                            audioFiles = doc?.listFiles()?.filter { it.type?.startsWith("audio/") == true }?.sortedBy { it.name } ?: emptyList()
-                                            currentScreen = Screen.TRACKS
+                                            if (!isFolderLoading) {
+                                                isFolderLoading = true
+                                                coroutineScope.launch(Dispatchers.IO) {
+                                                    val folderName = doc?.name ?: "Bilinmeyen"
+                                                    val files = doc?.listFiles()?.filter { it.type?.startsWith("audio/") == true }?.sortedBy { it.name } ?: emptyList()
+                                                    withContext(Dispatchers.Main) {
+                                                        currentFolderName = folderName
+                                                        audioFiles = files
+                                                        currentScreen = Screen.TRACKS
+                                                        isFolderLoading = false
+                                                    }
+                                                }
+                                            }
                                         }, colors = CardDefaults.cardColors(containerColor = Color(0xFF2C2C3E))) {
                                             Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                                                 Icon(Icons.Filled.Folder, contentDescription = null, tint = Color(0xFFBB86FC), modifier = Modifier.size(40.dp))
@@ -245,11 +271,15 @@ jobs:
                             LazyColumn(modifier = Modifier.padding(horizontal = 16.dp)) {
                                 itemsIndexed(audioFiles) { index, file ->
                                     Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable {
-                                        val items = audioFiles.map { MediaItem.Builder().setUri(it.uri).setMediaId(it.uri.toString()).setMediaMetadata(MediaMetadata.Builder().setTitle(it.name).build()).build() }
-                                        player?.setMediaItems(items, index, C.TIME_UNSET)
-                                        player?.prepare()
-                                        player?.play()
-                                        currentScreen = Screen.PLAYER
+                                        coroutineScope.launch(Dispatchers.IO) {
+                                            val items = audioFiles.map { MediaItem.Builder().setUri(it.uri).setMediaId(it.uri.toString()).setMediaMetadata(MediaMetadata.Builder().setTitle(it.name).build()).build() }
+                                            withContext(Dispatchers.Main) {
+                                                player?.setMediaItems(items, index, C.TIME_UNSET)
+                                                player?.prepare()
+                                                player?.play()
+                                                currentScreen = Screen.PLAYER
+                                            }
+                                        }
                                     }, colors = CardDefaults.cardColors(containerColor = Color(0xFF181824))) {
                                         Text("${index + 1}. ${file.name}", color = Color.LightGray, modifier = Modifier.padding(16.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     }
@@ -315,7 +345,7 @@ jobs:
             Column(modifier = Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                     IconButton(onClick = onBack) { Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Geri", tint = Color.White, modifier = Modifier.size(36.dp)) }
-                    Text("Şu An Çalıyor", color = Color.Gray, fontSize = 16.sp)
+                    Text("Naim Player", color = Color.Gray, fontSize = 16.sp)
                     IconButton(onClick = { showTimerDialog = true }) { Icon(Icons.Filled.Timer, contentDescription = "Zamanlayıcı", tint = if(timerRunning) Color(0xFFBB86FC) else Color.White) }
                 }
                 
@@ -384,7 +414,7 @@ jobs:
         }
         EOF
 
-    - name: Kutuphane Baglantilarini (Gradle) Olustur
+    - name: Kutuphane Ayarlari
       run: |
         cat << 'EOF' > app/build.gradle
         plugins {
@@ -399,7 +429,7 @@ jobs:
                 minSdk 24
                 targetSdk 34
                 versionCode 1
-                versionName "2.0"
+                versionName "3.0"
             }
             compileOptions {
                 sourceCompatibility JavaVersion.VERSION_17
@@ -430,7 +460,7 @@ jobs:
         }
         EOF
 
-    - name: Nova Pro APK Derlemesi
+    - name: Naim Player APK Uretimi
       run: |
         GRADLE_VERSION=8.2.1
         wget -q https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip
@@ -443,5 +473,5 @@ jobs:
     - name: APK Yukle
       uses: actions/upload-artifact@v5
       with:
-        name: Nova-Pro-App
+        name: Naim-Player-App
         path: app/build/outputs/apk/debug/app-debug.apk
